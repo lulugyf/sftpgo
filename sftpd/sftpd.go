@@ -4,9 +4,6 @@
 package sftpd
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -18,57 +15,39 @@ import (
 
 	"github.com/drakkan/sftpgo/dataprovider"
 	"github.com/drakkan/sftpgo/logger"
-	"github.com/drakkan/sftpgo/metrics"
 	"github.com/drakkan/sftpgo/utils"
 )
 
 const (
-	logSender           = "sftpd"
-	logSenderSCP        = "scp"
-	logSenderSSH        = "ssh"
-	uploadLogSender     = "Upload"
-	downloadLogSender   = "Download"
-	renameLogSender     = "Rename"
-	rmdirLogSender      = "Rmdir"
-	mkdirLogSender      = "Mkdir"
-	symlinkLogSender    = "Symlink"
-	removeLogSender     = "Remove"
-	chownLogSender      = "Chown"
-	chmodLogSender      = "Chmod"
-	chtimesLogSender    = "Chtimes"
-	sshCommandLogSender = "SSHCommand"
-	operationDownload   = "download"
-	operationUpload     = "upload"
-	operationDelete     = "delete"
-	operationRename     = "rename"
-	operationSSHCmd     = "ssh_cmd"
-	protocolSFTP        = "SFTP"
-	protocolSCP         = "SCP"
-	protocolSSH         = "SSH"
-	handshakeTimeout    = 2 * time.Minute
-)
-
-const (
-	uploadModeStandard = iota
-	uploadModeAtomic
-	uploadModeAtomicWithResume
+	logSender         = "sftpd"
+	logSenderSCP      = "scp"
+	logRforward       = "-R"
+	logLforward       = "-L"
+	uploadLogSender   = "Upload"
+	downloadLogSender = "Download"
+	renameLogSender   = "Rename"
+	rmdirLogSender    = "Rmdir"
+	mkdirLogSender    = "Mkdir"
+	symlinkLogSender  = "Symlink"
+	removeLogSender   = "Remove"
+	operationDownload = "download"
+	operationUpload   = "upload"
+	operationDelete   = "delete"
+	operationRename   = "rename"
+	protocolSFTP      = "SFTP"
+	protocolSCP       = "SCP"
 )
 
 var (
 	mutex                sync.RWMutex
 	openConnections      map[string]Connection
 	activeTransfers      []*Transfer
+	idleConnectionTicker *time.Ticker
 	idleTimeout          time.Duration
 	activeQuotaScans     []ActiveQuotaScan
 	dataProvider         dataprovider.Provider
 	actions              Actions
 	uploadMode           int
-	setstatMode          int
-	supportedSSHCommands = []string{"scp", "md5sum", "sha1sum", "sha256sum", "sha384sum", "sha512sum", "cd", "pwd",
-		"git-receive-pack", "git-upload-pack", "git-upload-archive", "rsync"}
-	defaultSSHCommands = []string{"md5sum", "sha1sum", "cd", "pwd", "scp"}
-	sshHashCommands    = []string{"md5sum", "sha1sum", "sha256sum", "sha384sum", "sha512sum"}
-	systemCommands     = []string{"git-receive-pack", "git-upload-pack", "git-upload-archive", "rsync"}
 )
 
 type connectionTransfer struct {
@@ -90,7 +69,7 @@ type ActiveQuotaScan struct {
 // Actions to execute on SFTP create, download, delete and rename.
 // An external command can be executed and/or an HTTP notification can be fired
 type Actions struct {
-	// Valid values are download, upload, delete, rename, ssh_cmd. Empty slice to disable
+	// Valid values are download, upload, delete, rename. Empty slice to disable
 	ExecuteOn []string `json:"execute_on" mapstructure:"execute_on"`
 	// Absolute path to the command to execute, empty to disable
 	Command string `json:"command" mapstructure:"command"`
@@ -112,135 +91,15 @@ type ConnectionStatus struct {
 	ConnectionTime int64 `json:"connection_time"`
 	// Last activity as unix timestamp in milliseconds
 	LastActivity int64 `json:"last_activity"`
-	// Protocol for this connection: SFTP, SCP, SSH
+	// Protocol for this connection: SFTP or SCP
 	Protocol string `json:"protocol"`
 	// active uploads/downloads
 	Transfers []connectionTransfer `json:"active_transfers"`
-	// for protocol SSH this is the issued command
-	SSHCommand string `json:"ssh_command"`
-}
-
-type sshSubsystemExitStatus struct {
-	Status uint32
-}
-
-type sshSubsystemExecMsg struct {
-	Command string
-}
-
-type actionNotification struct {
-	Action     string `json:"action"`
-	Username   string `json:"username"`
-	Path       string `json:"path"`
-	TargetPath string `json:"target_path,omitempty"`
-	SSHCmd     string `json:"ssh_cmd,omitempty"`
-	FileSize   int64  `json:"file_size,omitempty"`
-	FsProvider int    `json:"fs_provider"`
-	Bucket     string `json:"bucket,omitempty"`
-	Endpoint   string `json:"endpoint,omitempty"`
-}
-
-func newActionNotification(user dataprovider.User, operation, filePath, target, sshCmd string, fileSize int64) actionNotification {
-	bucket := ""
-	endpoint := ""
-	if user.FsConfig.Provider == 1 {
-		bucket = user.FsConfig.S3Config.Bucket
-		endpoint = user.FsConfig.S3Config.Endpoint
-	} else if user.FsConfig.Provider == 2 {
-		bucket = user.FsConfig.GCSConfig.Bucket
-	}
-	return actionNotification{
-		Action:     operation,
-		Username:   user.Username,
-		Path:       filePath,
-		TargetPath: target,
-		SSHCmd:     sshCmd,
-		FileSize:   fileSize,
-		FsProvider: user.FsConfig.Provider,
-		Bucket:     bucket,
-		Endpoint:   endpoint,
-	}
-}
-
-func (a *actionNotification) AsJSON() []byte {
-	res, _ := json.Marshal(a)
-	return res
-}
-
-func (a *actionNotification) AsEnvVars() []string {
-	return []string{fmt.Sprintf("SFTPGO_ACTION=%v", a.Action),
-		fmt.Sprintf("SFTPGO_ACTION_USERNAME=%v", a.Username),
-		fmt.Sprintf("SFTPGO_ACTION_PATH=%v", a.Path),
-		fmt.Sprintf("SFTPGO_ACTION_TARGET=%v", a.TargetPath),
-		fmt.Sprintf("SFTPGO_ACTION_SSH_CMD=%v", a.SSHCmd),
-		fmt.Sprintf("SFTPGO_ACTION_FILE_SIZE=%v", a.FileSize),
-		fmt.Sprintf("SFTPGO_ACTION_FS_PROVIDER=%v", a.FsProvider),
-		fmt.Sprintf("SFTPGO_ACTION_BUCKET=%v", a.Bucket),
-		fmt.Sprintf("SFTPGO_ACTION_ENDPOINT=%v", a.Endpoint)}
 }
 
 func init() {
 	openConnections = make(map[string]Connection)
-}
-
-// GetDefaultSSHCommands returns the SSH commands enabled as default
-func GetDefaultSSHCommands() []string {
-	result := make([]string, len(defaultSSHCommands))
-	copy(result, defaultSSHCommands)
-	return result
-}
-
-// GetSupportedSSHCommands returns the supported SSH commands
-func GetSupportedSSHCommands() []string {
-	result := make([]string, len(supportedSSHCommands))
-	copy(result, supportedSSHCommands)
-	return result
-}
-
-// GetConnectionDuration returns the connection duration as string
-func (c ConnectionStatus) GetConnectionDuration() string {
-	elapsed := time.Since(utils.GetTimeFromMsecSinceEpoch(c.ConnectionTime))
-	return utils.GetDurationAsString(elapsed)
-}
-
-// GetConnectionInfo returns connection info.
-// Protocol,Client Version and RemoteAddress are returned.
-// For SSH commands the issued command is returned too.
-func (c ConnectionStatus) GetConnectionInfo() string {
-	result := fmt.Sprintf("%v. Client: %#v From: %#v", c.Protocol, c.ClientVersion, c.RemoteAddress)
-	if c.Protocol == protocolSSH && len(c.SSHCommand) > 0 {
-		result += fmt.Sprintf(". Command: %#v", c.SSHCommand)
-	}
-	return result
-}
-
-// GetTransfersAsString returns the active transfers as string
-func (c ConnectionStatus) GetTransfersAsString() string {
-	result := ""
-	for _, t := range c.Transfers {
-		if len(result) > 0 {
-			result += ". "
-		}
-		result += t.getConnectionTransferAsString()
-	}
-	return result
-}
-
-func (t connectionTransfer) getConnectionTransferAsString() string {
-	result := ""
-	if t.OperationType == operationUpload {
-		result += "UL"
-	} else {
-		result += "DL"
-	}
-	result += fmt.Sprintf(" %#v ", t.Path)
-	if t.Size > 0 {
-		elapsed := time.Since(utils.GetTimeFromMsecSinceEpoch(t.StartTime))
-		speed := float64(t.Size) / float64(utils.GetTimeAsMsSinceEpoch(time.Now())-t.StartTime)
-		result += fmt.Sprintf("Size: %#v Elapsed: %#v Speed: \"%.1f KB/s\"", utils.ByteCountSI(t.Size),
-			utils.GetDurationAsString(elapsed), speed)
-	}
-	return result
+	idleConnectionTicker = time.NewTicker(5 * time.Minute)
 }
 
 // SetDataProvider sets the data provider to use to authenticate users and to get/update their disk quota
@@ -269,7 +128,7 @@ func GetQuotaScans() []ActiveQuotaScan {
 	return scans
 }
 
-// AddQuotaScan add a user to the ones with active quota scans.
+// AddQuotaScan add an user to the ones with active quota scans.
 // Returns false if the user has a quota scan already running
 func AddQuotaScan(username string) bool {
 	mutex.Lock()
@@ -286,7 +145,7 @@ func AddQuotaScan(username string) bool {
 	return true
 }
 
-// RemoveQuotaScan removes a user from the ones with active quota scans
+// RemoveQuotaScan removes an user from the ones with active quota scans
 func RemoveQuotaScan(username string) error {
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -302,7 +161,7 @@ func RemoveQuotaScan(username string) error {
 		activeQuotaScans[indexToRemove] = activeQuotaScans[len(activeQuotaScans)-1]
 		activeQuotaScans = activeQuotaScans[:len(activeQuotaScans)-1]
 	} else {
-		logger.Warn(logSender, "", "quota scan to remove not found for user: %v", username)
+		logger.Warn(logSender, "quota scan to remove not found for user: %v", username)
 		err = fmt.Errorf("quota scan to remove not found for user: %v", username)
 	}
 	return err
@@ -314,10 +173,13 @@ func CloseActiveConnection(connectionID string) bool {
 	result := false
 	mutex.RLock()
 	defer mutex.RUnlock()
-	if c, ok := openConnections[connectionID]; ok {
-		err := c.close()
-		c.Log(logger.LevelDebug, logSender, "close connection requested, close err: %v", err)
-		result = true
+	for _, c := range openConnections {
+		if c.ID == connectionID {
+			logger.Debug(logSender, "closing connection with id: %v", connectionID)
+			c.sshConn.Close()
+			result = true
+			break
+		}
 	}
 	return result
 }
@@ -337,7 +199,6 @@ func GetConnectionsStats() []ConnectionStatus {
 			LastActivity:   utils.GetTimeAsMsSinceEpoch(c.lastActivity),
 			Protocol:       c.protocol,
 			Transfers:      []connectionTransfer{},
-			SSHCommand:     c.command,
 		}
 		for _, t := range activeTransfers {
 			if t.connectionID == c.ID {
@@ -358,7 +219,7 @@ func GetConnectionsStats() []ConnectionStatus {
 					StartTime:     utils.GetTimeAsMsSinceEpoch(t.start),
 					Size:          size,
 					LastActivity:  utils.GetTimeAsMsSinceEpoch(t.lastActivity),
-					Path:          c.fs.GetRelativePath(t.path),
+					Path:          c.User.GetRelativePath(t.path),
 				}
 				conn.Transfers = append(conn.Transfers, connTransfer)
 			}
@@ -371,7 +232,8 @@ func GetConnectionsStats() []ConnectionStatus {
 func startIdleTimer(maxIdleTime time.Duration) {
 	idleTimeout = maxIdleTime
 	go func() {
-		for range time.Tick(5 * time.Minute) {
+		for t := range idleConnectionTicker.C {
+			logger.Debug(logSender, "idle connections check ticker %v", t)
 			CheckIdleConnections()
 		}
 	}()
@@ -387,41 +249,33 @@ func CheckIdleConnections() {
 			if t.connectionID == c.ID {
 				transferIdleTime := time.Since(t.lastActivity)
 				if transferIdleTime < idleTime {
-					c.Log(logger.LevelDebug, logSender, "idle time: %v setted to transfer idle time: %v",
-						idleTime, transferIdleTime)
+					logger.Debug(logSender, "idle time: %v setted to transfer idle time: %v connection id: %v",
+						idleTime, transferIdleTime, c.ID)
 					idleTime = transferIdleTime
 				}
 			}
 		}
 		if idleTime > idleTimeout {
-			err := c.close()
-			c.Log(logger.LevelInfo, logSender, "close idle connection, idle time: %v, close error: %v", idleTime, err)
+			logger.Debug(logSender, "close idle connection id: %v idle time: %v", c.ID, idleTime)
+			err := c.sshConn.Close()
+			logger.Debug(logSender, "idle connection closed id: %v, err: %v", c.ID, err)
 		}
 	}
+	logger.Debug(logSender, "check idle connections ended")
 }
 
-func addConnection(c Connection) {
+func addConnection(id string, conn Connection) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	openConnections[c.ID] = c
-	metrics.UpdateActiveConnectionsSize(len(openConnections))
-	c.Log(logger.LevelDebug, logSender, "connection added, num open connections: %v", len(openConnections))
+	openConnections[id] = conn
+	logger.Debug(logSender, "connection added, num open connections: %v", len(openConnections))
 }
 
-func removeConnection(c Connection) {
+func removeConnection(id string) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	delete(openConnections, c.ID)
-	metrics.UpdateActiveConnectionsSize(len(openConnections))
-	// we have finished to send data here and most of the time the underlying network connection
-	// is already closed. Sometime a client can still be reading the last sended data, so we set
-	// a deadline instead of directly closing the network connection.
-	// Setting a deadline on an already closed connection has no effect.
-	// We only need to ensure that a connection will not remain indefinitely open and so the
-	// underlying file descriptor is not released.
-	// This should protect us against buggy clients and edge cases.
-	c.netConn.SetDeadline(time.Now().Add(2 * time.Minute))
-	c.Log(logger.LevelDebug, logSender, "connection removed, num open connections: %v", len(openConnections))
+	delete(openConnections, id)
+	logger.Debug(logSender, "connection removed, num open connections: %v", len(openConnections))
 }
 
 func addTransfer(transfer *Transfer) {
@@ -445,7 +299,7 @@ func removeTransfer(transfer *Transfer) error {
 		activeTransfers[indexToRemove] = activeTransfers[len(activeTransfers)-1]
 		activeTransfers = activeTransfers[:len(activeTransfers)-1]
 	} else {
-		logger.Warn(logSender, transfer.connectionID, "transfer to remove not found!")
+		logger.Warn(logSender, "transfer to remove not found!")
 		err = fmt.Errorf("transfer to remove not found")
 	}
 	return err
@@ -460,57 +314,53 @@ func updateConnectionActivity(id string) {
 	}
 }
 
-func isAtomicUploadEnabled() bool {
-	return uploadMode == uploadModeAtomic || uploadMode == uploadModeAtomicWithResume
-}
-
-func executeNotificationCommand(a actionNotification) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, actions.Command, a.Action, a.Username, a.Path, a.TargetPath, a.SSHCmd)
-	cmd.Env = append(os.Environ(), a.AsEnvVars()...)
-	startTime := time.Now()
-	err := cmd.Run()
-	logger.Debug(logSender, "", "executed command %#v with arguments: %#v, %#v, %#v, %#v, %#v, elapsed: %v, error: %v",
-		actions.Command, a.Action, a.Username, a.Path, a.TargetPath, a.SSHCmd, time.Since(startTime), err)
-	return err
-}
-
-// executed in a goroutine
-func executeAction(a actionNotification) error {
-	if !utils.IsStringInSlice(a.Action, actions.ExecuteOn) {
+func executeAction(operation string, username string, path string, target string) error {
+	if !utils.IsStringInSlice(operation, actions.ExecuteOn) {
 		return nil
 	}
 	var err error
 	if len(actions.Command) > 0 && filepath.IsAbs(actions.Command) {
-		// we are in a goroutine but if we have to send an HTTP notification we don't want to wait for the
-		// end of the command
-		if len(actions.HTTPNotificationURL) > 0 {
-			go executeNotificationCommand(a)
+		if _, err = os.Stat(actions.Command); err == nil {
+			command := exec.Command(actions.Command, operation, username, path, target)
+			err = command.Start()
+			logger.Debug(logSender, "start command \"%v\" with arguments: %v, %v, %v, %v, error: %v",
+				actions.Command, operation, username, path, target, err)
+			if err == nil {
+				go command.Wait()
+			}
 		} else {
-			err = executeNotificationCommand(a)
+			logger.Warn(logSender, "Invalid action command \"%v\" : %v", actions.Command, err)
 		}
 	}
 	if len(actions.HTTPNotificationURL) > 0 {
 		var url *url.URL
 		url, err = url.Parse(actions.HTTPNotificationURL)
-		if err != nil {
-			logger.Warn(logSender, "", "Invalid http_notification_url %#v for operation %#v: %v", actions.HTTPNotificationURL,
-				a.Action, err)
-			return err
-		}
-		startTime := time.Now()
-		httpClient := &http.Client{
-			Timeout: 15 * time.Second,
-		}
-		resp, err := httpClient.Post(url.String(), "application/json", bytes.NewBuffer(a.AsJSON()))
-		respCode := 0
 		if err == nil {
-			respCode = resp.StatusCode
-			resp.Body.Close()
+			q := url.Query()
+			q.Add("action", operation)
+			q.Add("username", username)
+			q.Add("path", path)
+			if len(target) > 0 {
+				q.Add("target_path", target)
+			}
+			url.RawQuery = q.Encode()
+			go func() {
+				startTime := time.Now()
+				httpClient := &http.Client{
+					Timeout: 15 * time.Second,
+				}
+				resp, err := httpClient.Get(url.String())
+				respCode := 0
+				if err == nil {
+					respCode = resp.StatusCode
+					resp.Body.Close()
+				}
+				logger.Debug(logSender, "notified action to URL: %v status code: %v, elapsed: %v err: %v",
+					url.String(), respCode, time.Since(startTime), err)
+			}()
+		} else {
+			logger.Warn(logSender, "Invalid http_notification_url \"%v\" : %v", actions.HTTPNotificationURL, err)
 		}
-		logger.Debug(logSender, "", "notified operation %#v to URL: %v status code: %v, elapsed: %v err: %v",
-			a.Action, url.String(), respCode, time.Since(startTime), err)
 	}
 	return err
 }

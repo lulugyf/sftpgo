@@ -28,14 +28,11 @@ Basically there is a sub command for each REST API and the following global argu
  - `-u`, `--auth-user`, user for HTTP authentication
  - `-p`, `--auth-password`, password for HTTP authentication
  - `-i`, `--insecure`, enable to ignore verifying the SSL certificate. Default disabled
- - `-t`, `--no-color`, disable color highligth for JSON responses. You need python pygments module 1.5 or above for this to work. Default disabled if pygments is found and you aren't on Windows, otherwise enabled.
- - `-c`, `--color`, enable color highligth for JSON responses. You need python pygments module 1.5 or above for this to work. Default enabled if `pygments` is found and you aren't on Windows, otherwise disabled. Please read the note at the end of this doc for colors in Windows command prompt.
+ - `-t`, `--no-color`, disable color highligth for JSON responses. You need python pygments module 1.5 or above for this to work. Default disabled if pygments is found, enabled if not found. Please read the note at the end of this doc for colors in Windows command prompt.
 
 For each subcommand `--help` shows the available arguments, try for example:
 
 ```python sftpgo_api_cli.py add_user --help```
-
-Additionally it can convert users to the SFTPGo format from some supported users stores
 
 Let's see a sample usage for each REST API.
 
@@ -44,94 +41,34 @@ Let's see a sample usage for each REST API.
 Command:
 
 ```
-python sftpgo_api_cli.py add-user test_username --password "test_pwd" --home-dir="/tmp/test_home_dir" --uid 33 --gid 1000 --max-sessions 2 --quota-size 0 --quota-files 3 --permissions "list" "download" "upload" "delete" "rename" "create_dirs" "overwrite" --subdirs-permissions "/dir1::list,download" "/dir2::*" --upload-bandwidth 100 --download-bandwidth 60 --status 0 --expiration-date 2019-01-01 --allowed-ip "192.168.1.1/32" --fs S3 --s3-bucket test --s3-region eu-west-1 --s3-access-key accesskey --s3-access-secret secret --s3-endpoint "http://127.0.0.1:9000" --s3-storage-class Standard --s3-key-prefix "vfolder/" --s3-upload-part-size 10 --s3-upload-concurrency 4 --denied-login-methods "password" "keyboard-interactive" --allowed-extensions "/dir1::.jpg,.png" "/dir2::.rar,.png" --denied-extensions "/dir3::.zip,.rar"
+python sftpgo_api_cli.py add-user test_username --password "test_pwd" --home-dir="/tmp/test_home_dir" --uid 33 --gid 1000 --max-sessions 2 --quota-size 0 --quota-files 3 --permissions "list" "download" "upload" "delete" "rename" "create_dirs" --upload-bandwidth 100 --download-bandwidth 60
 ```
 
 Output:
 
 ```json
 {
-  "download_bandwidth": 60,
-  "expiration_date": 1546297200000,
-  "filesystem": {
-    "gcsconfig": {},
-    "provider": 1,
-    "s3config": {
-      "access_key": "accesskey",
-      "access_secret": "$aes$6c088ba12b0b261247c8cf331c46d9260b8e58002957d89ad1c0495e3af665cd0227",
-      "bucket": "test",
-      "endpoint": "http://127.0.0.1:9000",
-      "key_prefix": "vfolder/",
-      "region": "eu-west-1",
-      "storage_class": "Standard",
-      "upload_concurrency": 4,
-      "upload_part_size": 10
-    }
-  },
-  "filters": {
-    "allowed_ip": [
-      "192.168.1.1/32"
-    ],
-    "denied_login_methods": [
-      "password",
-      "keyboard-interactive"
-    ],
-    "file_extensions": [
-      {
-        "allowed_extensions": [
-          ".jpg",
-          ".png"
-        ],
-        "path": "/dir1"
-      },
-      {
-        "allowed_extensions": [
-          ".rar",
-          ".png"
-        ],
-        "path": "/dir2"
-      },
-      {
-        "denied_extensions": [
-          ".zip",
-          ".rar"
-        ],
-        "path": "/dir3"
-      }
-    ]
-  },
-  "gid": 1000,
+  "id": 5140,
+  "username": "test_username",
   "home_dir": "/tmp/test_home_dir",
-  "id": 9576,
-  "last_login": 0,
-  "last_quota_update": 0,
-  "max_sessions": 2,
-  "permissions": {
-    "/": [
-      "list",
-      "download",
-      "upload",
-      "delete",
-      "rename",
-      "create_dirs",
-      "overwrite"
-    ],
-    "/dir1": [
-      "list",
-      "download"
-    ],
-    "/dir2": [
-      "*"
-    ]
-  },
-  "quota_files": 3,
-  "quota_size": 0,
-  "status": 0,
   "uid": 33,
-  "upload_bandwidth": 100,
-  "used_quota_files": 0,
+  "gid": 1000,
+  "max_sessions": 2,
+  "quota_size": 0,
+  "quota_files": 3,
+  "permissions": [
+    "list",
+    "download",
+    "upload",
+    "delete",
+    "rename",
+    "create_dirs"
+  ],
   "used_quota_size": 0,
-  "username": "test_username"
+  "used_quota_files": 0,
+  "last_quota_update": 0,
+  "upload_bandwidth": 100,
+  "download_bandwidth": 60
 }
 ```
 
@@ -140,7 +77,7 @@ Output:
 Command:
 
 ```
-python sftpgo_api_cli.py update-user 9576 test_username --password "test_pwd" --home-dir="/tmp/test_home_dir" --uid 0 --gid 33 --max-sessions 3 --quota-size 0 --quota-files 4 --permissions "*" --subdirs-permissions "/dir1::list,download,create_symlinks" --upload-bandwidth 90 --download-bandwidth 80 --status 1 --expiration-date "" --allowed-ip "" --denied-ip "192.168.1.0/24" --denied-login-methods "" --fs local --virtual-folders "/vdir1::/tmp/mapped1" "/vdir2::/tmp/mapped2" --allowed-extensions "" --denied-extensions ""
+python sftpgo_api_cli.py update-user 5140 test_username --password "test_pwd" --home-dir="/tmp/test_home_dir" --uid 0 --gid 33 --max-sessions 3 --quota-size 0 --quota-files 4 --permissions "*" --upload-bandwidth 90 --download-bandwidth 80
 ```
 
 Output:
@@ -158,59 +95,29 @@ Output:
 Command:
 
 ```
-python sftpgo_api_cli.py get-user-by-id 9576
+python sftpgo_api_cli.py get-user-by-id 5140
 ```
 
 Output:
 
 ```json
 {
-  "download_bandwidth": 80,
-  "expiration_date": 0,
-  "filesystem": {
-    "gcsconfig": {},
-    "provider": 0,
-    "s3config": {}
-  },
-  "filters": {
-    "denied_ip": [
-      "192.168.1.0/24"
-    ]
-  },
-  "gid": 33,
-  "home_dir": "/tmp/test_home_dir",
-  "id": 9576,
-  "last_login": 0,
-  "last_quota_update": 0,
-  "max_sessions": 3,
-  "permissions": {
-    "/": [
-      "*"
-    ],
-    "/dir1": [
-      "list",
-      "download",
-      "create_symlinks"
-    ]
-  },
-  "quota_files": 4,
-  "quota_size": 0,
-  "status": 1,
-  "uid": 0,
-  "upload_bandwidth": 90,
-  "used_quota_files": 0,
-  "used_quota_size": 0,
+  "id": 5140,
   "username": "test_username",
-  "virtual_folders": [
-    {
-      "mapped_path": "/tmp/mapped1",
-      "virtual_path": "/vdir1"
-    },
-    {
-      "mapped_path": "/tmp/mapped2",
-      "virtual_path": "/vdir2"
-    }
-  ]
+  "home_dir": "/tmp/test_home_dir",
+  "uid": 0,
+  "gid": 33,
+  "max_sessions": 2,
+  "quota_size": 0,
+  "quota_files": 4,
+  "permissions": [
+    "*"
+  ],
+  "used_quota_size": 0,
+  "used_quota_files": 0,
+  "last_quota_update": 0,
+  "upload_bandwidth": 90,
+  "download_bandwidth": 80
 }
 ```
 
@@ -227,52 +134,22 @@ Output:
 ```json
 [
   {
-    "download_bandwidth": 80,
-    "expiration_date": 0,
-    "filesystem": {
-      "gcsconfig": {},
-      "provider": 0,
-      "s3config": {}
-    },
-    "filters": {
-      "denied_ip": [
-        "192.168.1.0/24"
-      ]
-    },
-    "gid": 33,
-    "home_dir": "/tmp/test_home_dir",
-    "id": 9576,
-    "last_login": 0,
-    "last_quota_update": 0,
-    "max_sessions": 3,
-    "permissions": {
-      "/": [
-        "*"
-      ],
-      "/dir1": [
-        "list",
-        "download",
-        "create_symlinks"
-      ]
-    },
-    "quota_files": 4,
-    "quota_size": 0,
-    "status": 1,
-    "uid": 0,
-    "upload_bandwidth": 90,
-    "used_quota_files": 0,
-    "used_quota_size": 0,
+    "id": 5140,
     "username": "test_username",
-    "virtual_folders": [
-      {
-        "mapped_path": "/tmp/mapped1",
-        "virtual_path": "/vdir1"
-      },
-      {
-        "mapped_path": "/tmp/mapped2",
-        "virtual_path": "/vdir2"
-      }
-    ]
+    "home_dir": "/tmp/test_home_dir",
+    "uid": 0,
+    "gid": 33,
+    "max_sessions": 2,
+    "quota_size": 0,
+    "quota_files": 4,
+    "permissions": [
+      "*"
+    ],
+    "used_quota_size": 0,
+    "used_quota_files": 0,
+    "last_quota_update": 0,
+    "upload_bandwidth": 90,
+    "download_bandwidth": 80
   }
 ]
 ```
@@ -290,23 +167,22 @@ Output:
 ```json
 [
   {
+    "username": "test_username",
+    "connection_id": "76a11b22260ee4249328df28bef34dc64c70f7c097db52159fc24049eeb0e32c",
+    "client_version": "SSH-2.0-OpenSSH_8.0",
+    "remote_address": "127.0.0.1:41622",
+    "connection_time": 1564696137971,
+    "last_activity": 1564696159605,
+    "protocol": "SFTP",
     "active_transfers": [
       {
-        "last_activity": 1577197485561,
         "operation_type": "upload",
-        "path": "/test_upload.tar.gz",
-        "size": 1540096,
-        "start_time": 1577197471372
+        "path": "/test_upload.gz",
+        "start_time": 1564696149783,
+        "size": 1146880,
+        "last_activity": 1564696159605
       }
-    ],
-    "client_version": "SSH-2.0-OpenSSH_8.1",
-    "connection_id": "f82cfec6a391ad673edd4ae9a144f32ccb59456139f8e1185b070134fffbab7c",
-    "connection_time": 1577197433003,
-    "last_activity": 1577197485561,
-    "protocol": "SFTP",
-    "remote_address": "127.0.0.1:43714",
-    "ssh_command": "",
-    "username": "test_username"
+    ]
   }
 ]
 ```
@@ -316,7 +192,7 @@ Output:
 Command:
 
 ```
-python sftpgo_api_cli.py close-connection f82cfec6a391ad673edd4ae9a144f32ccb59456139f8e1185b070134fffbab7c
+python sftpgo_api_cli.py close-connection 76a11b22260ee4249328df28bef34dc64c70f7c097db52159fc24049eeb0e32c
 ```
 
 Output:
@@ -360,7 +236,7 @@ Output:
 Command:
 
 ```
-python sftpgo_api_cli.py delete-user 9576
+python sftpgo_api_cli.py delete-user 5140
 ```
 
 Output:
@@ -385,97 +261,11 @@ Output:
 
 ```json
 {
-  "build_date": "2019-12-24T14:17:47Z",
-  "commit_hash": "f8fd5c0-dirty",
-  "version": "0.9.4-dev"
+  "version": "0.9.0-dev",
+  "build_date": "2019-08-08T08:11:34Z",
+  "commit_hash": "4f4489d-dirty"
 }
 ```
-
-### Get provider status
-
-Command:
-
-```
-python sftpgo_api_cli.py get-provider-status
-```
-
-Output:
-
-```json
-{
-  "error": "",
-  "message": "Alive",
-  "status": 200
-}
-```
-
-### Backup data
-
-Command:
-
-```
-python sftpgo_api_cli.py dumpdata backup.json --indent 1
-```
-
-Output:
-
-```json
-{
-  "error": "",
-  "message": "Data saved",
-  "status": 200
-}
-```
-
-### Restore data
-
-Command:
-
-```
-python sftpgo_api_cli.py loaddata /app/data/backups/backup.json --scan-quota 2 --mode 0
-```
-
-Output:
-
-```json
-{
-  "error": "",
-  "message": "Data restored",
-  "status": 200
-}
-```
-
-### Convert users from other stores
-
-You can convert users to the SFTPGo format from the following users stores:
-
-- Linux users stored in `shadow`/`passwd` files
-- Pure-FTPd virtual users generated using `pure-pw` CLI
-- ProFTPD users generated using `ftpasswd` CLI
-
-For details give a look at the `convert-users` subcommand usage:
-
-```
-python sftpgo_api_cli.py convert-users --help
-```
-
-Let's see some examples:
-
-```
-python sftpgo_api_cli.py convert-users "" unix-passwd unix_users.json --min-uid 500 --force-uid 1000 --force-gid 1000
-```
-
-```
-python sftpgo_api_cli.py convert-users pureftpd.passwd pure-ftpd pure_users.json --usernames "user1" "user2"
-```
-
-```
-python sftpgo_api_cli.py convert-users proftpd.passwd proftpd pro_users.json
-```
-
-The json file generated using the `convert-users` subcommand can be used as input for the `loaddata` subcommand.
-
-Please note that when importing Linux/Unix users the input file is not required: `/etc/passwd` and `/etc/shadow` are automatically parsed. `/etc/shadow` read permission is is typically granted to the `root` user, so you need to execute the `convert-users` subcommand as `root`.
 
 ### Colors highlight for Windows command prompt
 

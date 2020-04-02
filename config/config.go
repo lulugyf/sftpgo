@@ -9,16 +9,16 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/drakkan/sftpgo/api"
 	"github.com/drakkan/sftpgo/dataprovider"
-	"github.com/drakkan/sftpgo/httpd"
 	"github.com/drakkan/sftpgo/logger"
 	"github.com/drakkan/sftpgo/sftpd"
-	"github.com/drakkan/sftpgo/utils"
 	"github.com/spf13/viper"
 )
 
 const (
-	logSender = "config"
+	logSender     = "config"
+	defaultBanner = "SFTPGo"
 	// DefaultConfigName defines the name for the default config file.
 	// This is the file name without extension, we use viper and so we
 	// support all the config files format supported by viper
@@ -28,14 +28,13 @@ const (
 )
 
 var (
-	globalConf    globalConfig
-	defaultBanner = fmt.Sprintf("SFTPGo_%v", utils.GetAppVersion().Version)
+	globalConf globalConfig
 )
 
 type globalConfig struct {
 	SFTPD        sftpd.Configuration `json:"sftpd" mapstructure:"sftpd"`
 	ProviderConf dataprovider.Config `json:"data_provider" mapstructure:"data_provider"`
-	HTTPDConfig  httpd.Conf          `json:"httpd" mapstructure:"httpd"`
+	HTTPDConfig  api.HTTPDConf       `json:"httpd" mapstructure:"httpd"`
 }
 
 func init() {
@@ -54,15 +53,8 @@ func init() {
 				Command:             "",
 				HTTPNotificationURL: "",
 			},
-			Keys:                    []sftpd.Key{},
-			KexAlgorithms:           []string{},
-			Ciphers:                 []string{},
-			MACs:                    []string{},
-			LoginBannerFile:         "",
-			EnabledSSHCommands:      sftpd.GetDefaultSSHCommands(),
-			KeyboardInteractiveHook: "",
-			ProxyProtocol:           0,
-			ProxyAllowed:            []string{},
+			Keys:         []sftpd.Key{},
+			IsSCPEnabled: false,
 		},
 		ProviderConf: dataprovider.Config{
 			Driver:           "sqlite",
@@ -76,27 +68,10 @@ func init() {
 			ManageUsers:      1,
 			SSLMode:          0,
 			TrackQuota:       1,
-			PoolSize:         0,
-			UsersBaseDir:     "",
-			Actions: dataprovider.Actions{
-				ExecuteOn:           []string{},
-				Command:             "",
-				HTTPNotificationURL: "",
-			},
-			ExternalAuthHook:  "",
-			ExternalAuthScope: 0,
-			CredentialsPath:   "credentials",
-			PreLoginHook:      "",
 		},
-		HTTPDConfig: httpd.Conf{
-			BindPort:           8080,
-			BindAddress:        "127.0.0.1",
-			TemplatesPath:      "templates",
-			StaticFilesPath:    "static",
-			BackupsPath:        "backups",
-			AuthUserFile:       "",
-			CertificateFile:    "",
-			CertificateKeyFile: "",
+		HTTPDConfig: api.HTTPDConf{
+			BindPort:    8080,
+			BindAddress: "127.0.0.1",
 		},
 	}
 
@@ -104,8 +79,9 @@ func init() {
 	replacer := strings.NewReplacer(".", "__")
 	viper.SetEnvKeyReplacer(replacer)
 	viper.SetConfigName(DefaultConfigName)
+	setViperAdditionalConfigPaths()
+	viper.AddConfigPath(".")
 	viper.AutomaticEnv()
-	viper.AllowEmptyEnv(true)
 }
 
 // GetSFTPDConfig returns the configuration for the SFTP server
@@ -113,35 +89,14 @@ func GetSFTPDConfig() sftpd.Configuration {
 	return globalConf.SFTPD
 }
 
-// SetSFTPDConfig sets the configuration for the SFTP server
-func SetSFTPDConfig(config sftpd.Configuration) {
-	globalConf.SFTPD = config
-}
-
 // GetHTTPDConfig returns the configuration for the HTTP server
-func GetHTTPDConfig() httpd.Conf {
+func GetHTTPDConfig() api.HTTPDConf {
 	return globalConf.HTTPDConfig
-}
-
-// SetHTTPDConfig sets the configuration for the HTTP server
-func SetHTTPDConfig(config httpd.Conf) {
-	globalConf.HTTPDConfig = config
 }
 
 //GetProviderConf returns the configuration for the data provider
 func GetProviderConf() dataprovider.Config {
 	return globalConf.ProviderConf
-}
-
-//SetProviderConf sets the configuration for the data provider
-func SetProviderConf(config dataprovider.Config) {
-	globalConf.ProviderConf = config
-}
-
-func getRedactedGlobalConf() globalConfig {
-	conf := globalConf
-	conf.ProviderConf.Password = "[redacted]"
-	return conf
 }
 
 // LoadConfig loads the configuration
@@ -152,76 +107,28 @@ func getRedactedGlobalConf() globalConfig {
 func LoadConfig(configDir, configName string) error {
 	var err error
 	viper.AddConfigPath(configDir)
-	setViperAdditionalConfigPaths()
-	viper.AddConfigPath(".")
 	viper.SetConfigName(configName)
 	if err = viper.ReadInConfig(); err != nil {
-		logger.Warn(logSender, "", "error loading configuration file: %v. Default configuration will be used: %+v",
-			err, getRedactedGlobalConf())
+		logger.Warn(logSender, "error loading configuration file: %v. Default configuration will be used: %+v", err, globalConf)
 		logger.WarnToConsole("error loading configuration file: %v. Default configuration will be used.", err)
 		return err
 	}
 	err = viper.Unmarshal(&globalConf)
 	if err != nil {
-		logger.Warn(logSender, "", "error parsing configuration file: %v. Default configuration will be used: %+v",
-			err, getRedactedGlobalConf())
+		logger.Warn(logSender, "error parsing configuration file: %v. Default configuration will be used: %+v", err, globalConf)
 		logger.WarnToConsole("error parsing configuration file: %v. Default configuration will be used.", err)
 		return err
 	}
 	if strings.TrimSpace(globalConf.SFTPD.Banner) == "" {
 		globalConf.SFTPD.Banner = defaultBanner
 	}
-	if len(globalConf.ProviderConf.UsersBaseDir) > 0 && !utils.IsFileInputValid(globalConf.ProviderConf.UsersBaseDir) {
-		err = fmt.Errorf("invalid users base dir %#v will be ignored", globalConf.ProviderConf.UsersBaseDir)
-		globalConf.ProviderConf.UsersBaseDir = ""
-		logger.Warn(logSender, "", "Configuration error: %v", err)
-		logger.WarnToConsole("Configuration error: %v", err)
-	}
-	if globalConf.SFTPD.UploadMode < 0 || globalConf.SFTPD.UploadMode > 2 {
-		err = fmt.Errorf("invalid upload_mode 0, 1 and 2 are supported, configured: %v reset upload_mode to 0",
+	if globalConf.SFTPD.UploadMode < 0 || globalConf.SFTPD.UploadMode > 1 {
+		err = fmt.Errorf("Invalid upload_mode 0 and 1 are supported, configured: %v reset upload_mode to 0",
 			globalConf.SFTPD.UploadMode)
 		globalConf.SFTPD.UploadMode = 0
-		logger.Warn(logSender, "", "Configuration error: %v", err)
+		logger.Warn(logSender, "Configuration error: %v", err)
 		logger.WarnToConsole("Configuration error: %v", err)
 	}
-	if globalConf.SFTPD.ProxyProtocol < 0 || globalConf.SFTPD.ProxyProtocol > 2 {
-		err = fmt.Errorf("invalid proxy_protocol 0, 1 and 2 are supported, configured: %v reset proxy_protocol to 0",
-			globalConf.SFTPD.ProxyProtocol)
-		globalConf.SFTPD.ProxyProtocol = 0
-		logger.Warn(logSender, "", "Configuration error: %v", err)
-		logger.WarnToConsole("Configuration error: %v", err)
-	}
-	if globalConf.ProviderConf.ExternalAuthScope < 0 || globalConf.ProviderConf.ExternalAuthScope > 7 {
-		err = fmt.Errorf("invalid external_auth_scope: %v reset to 0", globalConf.ProviderConf.ExternalAuthScope)
-		globalConf.ProviderConf.ExternalAuthScope = 0
-		logger.Warn(logSender, "", "Configuration error: %v", err)
-		logger.WarnToConsole("Configuration error: %v", err)
-	}
-	if len(globalConf.ProviderConf.CredentialsPath) == 0 {
-		err = fmt.Errorf("invalid credentials path, reset to \"credentials\"")
-		globalConf.ProviderConf.CredentialsPath = "credentials"
-		logger.Warn(logSender, "", "Configuration error: %v", err)
-		logger.WarnToConsole("Configuration error: %v", err)
-	}
-	checkHooksCompatibility()
-	logger.Debug(logSender, "", "config file used: '%#v', config loaded: %+v", viper.ConfigFileUsed(), getRedactedGlobalConf())
+	logger.Debug(logSender, "config file used: '%v', config loaded: %+v", viper.ConfigFileUsed(), globalConf)
 	return err
-}
-
-func checkHooksCompatibility() {
-	if len(globalConf.ProviderConf.ExternalAuthProgram) > 0 && len(globalConf.ProviderConf.ExternalAuthHook) == 0 {
-		logger.Warn(logSender, "", "external_auth_program is deprecated, please use external_auth_hook")
-		logger.WarnToConsole("external_auth_program is deprecated, please use external_auth_hook")
-		globalConf.ProviderConf.ExternalAuthHook = globalConf.ProviderConf.ExternalAuthProgram
-	}
-	if len(globalConf.ProviderConf.PreLoginProgram) > 0 && len(globalConf.ProviderConf.PreLoginHook) == 0 {
-		logger.Warn(logSender, "", "pre_login_program is deprecated, please use pre_login_hook")
-		logger.WarnToConsole("pre_login_program is deprecated, please use pre_login_hook")
-		globalConf.ProviderConf.PreLoginHook = globalConf.ProviderConf.PreLoginProgram
-	}
-	if len(globalConf.SFTPD.KeyboardInteractiveProgram) > 0 && len(globalConf.SFTPD.KeyboardInteractiveHook) == 0 {
-		logger.Warn(logSender, "", "keyboard_interactive_auth_program is deprecated, please use keyboard_interactive_auth_hook")
-		logger.WarnToConsole("keyboard_interactive_auth_program is deprecated, please use keyboard_interactive_auth_hook")
-		globalConf.SFTPD.KeyboardInteractiveHook = globalConf.SFTPD.KeyboardInteractiveProgram
-	}
 }
