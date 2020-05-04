@@ -243,7 +243,7 @@ func validateUser(user *User) error {
 		return &ValidationError{err: "Please grant some permissions to this user"}
 	}
 	if !filepath.IsAbs(user.HomeDir) {
-		return &ValidationError{err: fmt.Sprintf("home_dir must be an absolute path, actual value: %v", user.HomeDir)}
+		return &ValidationError{err: fmt.Sprintf("home_dir must be an absolute path, actual value: [%v]--", user.HomeDir)}
 	}
 	for _, p := range user.Permissions {
 		if !utils.IsStringInSlice(p, validPerms) {

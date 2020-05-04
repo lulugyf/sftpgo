@@ -82,6 +82,10 @@ func SetPathPermissions(path string, uid int, gid int) {
 	}
 }
 
+func Lstat(name string) (os.FileInfo, error) {
+	return os.Lstat(name)
+}
+
 // GetAppVersion returns VersionInfo struct
 func GetAppVersion() VersionInfo {
 	return versionInfo

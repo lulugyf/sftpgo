@@ -75,6 +75,7 @@ func (p SQLiteProvider) userExists(username string) (User, error) {
 }
 
 func (p SQLiteProvider) addUser(user User) error {
+	fmt.Printf("  -- sqlite3 addUser\n")
 	return sqlCommonAddUser(user, p.dbHandle)
 }
 

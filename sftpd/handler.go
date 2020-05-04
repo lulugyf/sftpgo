@@ -109,6 +109,8 @@ func (c Connection) Filewrite(request *sftp.Request) (io.WriterAt, error) {
 	// If the file doesn't exist we need to create it, as well as the directory pathway
 	// leading up to where that file will be created.
 	if os.IsNotExist(statErr) {
+		logger.Debug(logSender, "upload new file to %s, Flags: %x FileMode: %v  stat: %v",
+			filePath, request.Flags, request.Attributes().FileMode().String(), request.AttrFlags())
 		return c.handleSFTPUploadToNewFile(p, filePath)
 	}
 
@@ -141,12 +143,12 @@ func (c Connection) Filecmd(request *sftp.Request) error {
 		return sftp.ErrSshFxOpUnsupported
 	}
 
-	logger.Debug(logSender, "new cmd, method: %v user: %v sourcePath: %v, targetPath: %v", request.Method, c.User.Username,
-		p, target)
+	logger.Debug(logSender, "new cmd, method: %v user: %v sourcePath: %v, targetPath: %v, fileMod: %v",
+		request.Method, c.User.Username, p, target, request.Attributes().FileMode().String())
 
 	switch request.Method {
 	case "Setstat":
-		return nil
+		return c.handleSFTPSetstat(p, request)
 	case "Rename":
 		err = c.handleSFTPRename(p, target)
 		if err != nil {
@@ -433,6 +435,43 @@ func (c Connection) handleSFTPUploadToExistingFile(pflags sftp.FileOpenFlags, re
 	}
 	addTransfer(&transfer)
 	return &transfer, nil
+}
+
+func (c Connection) handleSFTPSetstat(filePath string, request *sftp.Request) error {
+	attrFlags := request.AttrFlags()
+	if attrFlags.Permissions {
+		fileMode := request.Attributes().FileMode()
+		if err := os.Chmod(filePath, fileMode); err != nil {
+			logger.Warn(logSender, "failed to chmod path %#v, mode: %v, err: %+v", filePath, fileMode.String(), err)
+			return sftp.ErrSshFxFailure
+		}
+		//logger.CommandLog(, filePath, "", c.User.Username, fileMode.String(), c.ID, c.protocol, -1, -1, "", "", "")
+		return nil
+	} else if attrFlags.UidGid {
+		uid := int(request.Attributes().UID)
+		gid := int(request.Attributes().GID)
+		if err := os.Chown(filePath, uid, gid); err != nil {
+			logger.Warn( logSender, "failed to chown path %#v, uid: %v, gid: %v, err: %+v", filePath, uid, gid, err)
+			return sftp.ErrSshFxFailure
+		}
+		//logger.CommandLog(chownLogSender, filePath, "", c.User.Username, "", c.ID, c.protocol, uid, gid, "", "", "")
+		return nil
+	} else if attrFlags.Acmodtime {
+		accessTime := time.Unix(int64(request.Attributes().Atime), 0)
+		modificationTime := time.Unix(int64(request.Attributes().Mtime), 0)
+		if err := os.Chtimes(filePath, accessTime, modificationTime); err != nil {
+			logger.Warn( logSender, "failed to chtimes for path %#v, access time: %v, modification time: %v, err: %+v",
+				filePath, accessTime, modificationTime, err)
+			return sftp.ErrSshFxFailure
+		}
+		//dateFormat := "2006-01-02T15:04:05" // YYYY-MM-DDTHH:MM:SS
+		//accessTimeString := accessTime.Format(dateFormat)
+		//modificationTimeString := modificationTime.Format(dateFormat)
+		//logger.CommandLog(chtimesLogSender, filePath, "", c.User.Username, "", c.ID, c.protocol, -1, -1, accessTimeString,
+		//	modificationTimeString, "")
+		return nil
+	}
+	return nil
 }
 
 func (c Connection) hasSpace(checkFiles bool) bool {

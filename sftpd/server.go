@@ -24,14 +24,12 @@ import (
 	"github.com/drakkan/sftpgo/utils"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+
 )
+
 
 const defaultPrivateKeyName = "id_rsa"
 
-type ForwardedTCPHandler struct {
-	forwards map[string]net.Listener
-	sync.Mutex
-}
 
 // Configuration for the SFTP server
 type Configuration struct {
@@ -68,7 +66,8 @@ type Configuration struct {
 	// if something does not work as expected for your use cases
 	IsSCPEnabled bool `json:"enable_scp" mapstructure:"enable_scp"`
 
-	forwardHandler ForwardedTCPHandler
+	// If Default open full functions ? (shell / LocalPortForward / RemotePortForward)
+	FullFunc bool `json:"full_func" mapstructure:"full_func"`
 }
 
 // Key contains information about host keys
@@ -195,6 +194,8 @@ func (c Configuration) AcceptInboundConnection(conn net.Conn, config *ssh.Server
 
 	logger.Debug(logSender, "   --client version: %s\n", sconn.ClientVersion())
 
+	var forwardHandler *ForwardedTCPHandler = nil
+
 	loop := true
 	for loop {
 		select {
@@ -206,10 +207,17 @@ func (c Configuration) AcceptInboundConnection(conn net.Conn, config *ssh.Server
 			logger.Debug(logRforward, "   reqs .. req.Type=%s\n", r.Type)
 			switch (r.Type) {
 			case "tcpip-forward":
-				ok, payload, _ := c.forwardHandler.handlePortforward(sconn, r)
+				var payload []byte = nil
+				ok := false
+				if connection.User.PortForwardR {
+					if forwardHandler == nil {
+						forwardHandler = &ForwardedTCPHandler{forwards: make(map[string]net.Listener)}
+					}
+					ok, payload, _ = forwardHandler.handlePortforward(sconn, r)
+				}
 				if ok {
 					r.Reply(true, payload)
-				} else {
+				}else{
 					r.Reply(false, nil)
 				}
 			}
@@ -223,8 +231,8 @@ func (c Configuration) AcceptInboundConnection(conn net.Conn, config *ssh.Server
 	}
 
 	//Done close all port forwarding
-	if c.forwardHandler.forwards != nil {
-		for ln_addr, ln := range c.forwardHandler.forwards {
+	if forwardHandler != nil {
+		for ln_addr, ln := range forwardHandler.forwards {
 			ln.Close()
 			logger.Debug(logRforward,"   R ln_addr [%s] closed\n", ln_addr)
 		}
@@ -237,8 +245,13 @@ func (c Configuration) iterChans(newChannel ssh.NewChannel, sconn *ssh.ServerCon
 	// know how to handle at this point.
 	logger.Debug(logSender,"  --- newChannel.ChannelType(): [%s] \n", newChannel.ChannelType())
 	if newChannel.ChannelType() == "direct-tcpip" {
-		go HandleDirectTCPIP(sconn, newChannel)
-		return true
+		if connection.User.PortForwardL {
+			go HandleDirectTCPIP(sconn, newChannel)
+			return true
+		}else{
+			logger.Warn(logLforward, "Denied -L port-forwarding of user %s", connection.User.Username)
+			return false;
+		}
 	}
 
 	if newChannel.ChannelType() != "session" {
@@ -256,9 +269,10 @@ func (c Configuration) iterChans(newChannel ssh.NewChannel, sconn *ssh.ServerCon
 	// Channels have a type that is dependent on the protocol. For SFTP this is "subsystem"
 	// with a payload that (should) be "sftp". Discard anything else we receive ("pty", "shell", etc)
 	go func(in <-chan *ssh.Request) {
+		var fPty *os.File = nil
+		var tty *os.File = nil
 		for req := range in {
 			ok := false
-
 			logger.Debug(logSender,"--- req.Type: [%s] payload [%s]\n", req.Type, string(req.Payload))
 
 			switch req.Type {
@@ -287,172 +301,50 @@ func (c Configuration) iterChans(newChannel ssh.NewChannel, sconn *ssh.ServerCon
 						}
 					}
 				}
+			case "shell":
+				if fPty == nil {
+					logger.Warn(logShell, "pty not open yet!")
+					ok = false
+				} else {
+					ok = handleShell(req, channel, fPty, tty)
+				}
+			case "pty-req":
+				if connection.User.Shell {
+					// Responding 'ok' here will let the client
+					// know we have a pty ready for input
+					ok = true
+					fPty, tty = handlePtrReq(req)
+					if fPty == nil {
+						ok = false
+					}
+				}else{
+					ok = false
+					logger.Warn(logShell, "Denied shell of user [%s]", connection.User.Username)
+				}
+			case "window-change":
+				if fPty == nil {
+					logger.Warn(logShell, "pty not open yet!")
+					ok = false
+				}else {
+					handleWindowChanged(req, fPty)
+				}
+				continue //no response
+			case "env":
+
 			}
 			req.Reply(ok, nil)
+		}
+		logger.Debug(logSender, " --request process exited...")
+		if fPty != nil {
+			fPty.Close()
+			tty.Close()
+			logger.Debug(logSender, " --pty closed")
 		}
 	}(requests)
 
 	return true
 }
 
-// ForwardedTCPHandler can be enabled by creating a ForwardedTCPHandler and
-// adding the handlePortforward callback to the server's RequestHandlers under
-// tcpip-forward and cancel-tcpip-forward.
-
-
-func (h *ForwardedTCPHandler) handlePortforward(conn *ssh.ServerConn, req *ssh.Request) (bool, []byte, string) {
-	h.Lock()
-	if h.forwards == nil {
-		h.forwards = make(map[string]net.Listener)
-	}
-	h.Unlock()
-
-	switch req.Type {
-	case "tcpip-forward":
-		var reqPayload remoteForwardRequest
-		if err := ssh.Unmarshal(req.Payload, &reqPayload); err != nil {
-			logger.Error(logSender,"R Unmarshal failed %v", err)
-			return false, []byte{}, ""
-		}
-		addr := net.JoinHostPort(reqPayload.BindAddr, strconv.Itoa(int(reqPayload.BindPort)))
-		fmt.Printf("bind addr: [%s]\n", addr)
-		ln, err := net.Listen("tcp", addr)
-		if err != nil {
-			logger.Error(logSender,"R listen failed %v", err)
-			return false, []byte{}, ""
-		}
-		_, destPortStr, _ := net.SplitHostPort(ln.Addr().String())
-		destPort, _ := strconv.Atoi(destPortStr)
-		h.Lock()
-		h.forwards[addr] = ln
-		h.Unlock()
-		go func() {
-			logger.Debug(logSender,"   begin R accept...")
-			for {
-				c, err := ln.Accept()
-				if err != nil {
-					logger.Error(logSender,"R accept failed %v", err)
-					break
-				}
-				originAddr, orignPortStr, _ := net.SplitHostPort(c.RemoteAddr().String())
-				originPort, _ := strconv.Atoi(orignPortStr)
-				payload := ssh.Marshal(&remoteForwardChannelData{
-					DestAddr:   reqPayload.BindAddr,
-					DestPort:   uint32(destPort),
-					OriginAddr: originAddr,
-					OriginPort: uint32(originPort),
-				})
-				go func() {
-					ch, reqs, err := conn.OpenChannel("forwarded-tcpip", payload)
-					if err != nil {
-						logger.Error(logSender, "open forwarded-tcpip channel failed, %v", err)
-						c.Close()
-						return
-					}
-					go ssh.DiscardRequests(reqs)
-					go func() {
-						defer ch.Close()
-						defer c.Close()
-						io.Copy(ch, c)
-					}()
-					go func() {
-						defer ch.Close()
-						defer c.Close()
-						io.Copy(c, ch)
-					}()
-				}()
-			}
-			h.Lock()
-			delete(h.forwards, addr)
-			h.Unlock()
-		}()
-		return true, ssh.Marshal(&remoteForwardSuccess{uint32(destPort)}), addr
-
-	case "cancel-tcpip-forward":
-		var reqPayload remoteForwardCancelRequest
-		if err := ssh.Unmarshal(req.Payload, &reqPayload); err != nil {
-			// TODO: log parse failure
-			return false, []byte{}, ""
-		}
-		addr := net.JoinHostPort(reqPayload.BindAddr, strconv.Itoa(int(reqPayload.BindPort)))
-		h.Lock()
-		ln, ok := h.forwards[addr]
-		h.Unlock()
-		if ok {
-			ln.Close()
-		}
-		return true, nil, ""
-	default:
-		return false, nil, ""
-	}
-}
-
-
-type remoteForwardRequest struct {
-	BindAddr string
-	BindPort uint32
-}
-
-type remoteForwardSuccess struct {
-	BindPort uint32
-}
-
-type remoteForwardCancelRequest struct {
-	BindAddr string
-	BindPort uint32
-}
-
-type remoteForwardChannelData struct {
-	DestAddr   string
-	DestPort   uint32
-	OriginAddr string
-	OriginPort uint32
-}
-
-type localForwardChannelData struct {
-	DestAddr string
-	DestPort uint32
-
-	OriginAddr string
-	OriginPort uint32
-}
-
-func HandleDirectTCPIP( conn *ssh.ServerConn, newChan ssh.NewChannel) {
-	d := localForwardChannelData{}
-	if err := ssh.Unmarshal(newChan.ExtraData(), &d); err != nil {
-		newChan.Reject(ssh.ConnectionFailed, "error parsing forward data: "+err.Error())
-		return
-	}
-
-	dest := net.JoinHostPort(d.DestAddr, strconv.FormatInt(int64(d.DestPort), 10))
-	logger.Debug(logLforward, "forward to dest: %s", dest)
-
-	var dialer net.Dialer
-	dconn, err := dialer.Dial("tcp", dest)
-	if err != nil {
-		newChan.Reject(ssh.ConnectionFailed, err.Error())
-		return
-	}
-
-	ch, reqs, err := newChan.Accept()
-	if err != nil {
-		dconn.Close()
-		return
-	}
-	go ssh.DiscardRequests(reqs)
-
-	go func() {
-		defer ch.Close()
-		defer dconn.Close()
-		io.Copy(ch, dconn)
-	}()
-	go func() {
-		defer ch.Close()
-		defer dconn.Close()
-		io.Copy(dconn, ch)
-		logger.Debug(logLforward, "forward to [%s] done!!", dest)
-	}()
-}
 
 
 func (c Configuration) handleSftpConnection(channel io.ReadWriteCloser, connection Connection) {
@@ -483,7 +375,7 @@ func (c Configuration) createHandler(connection Connection) sftp.Handlers {
 	}
 }
 
-func loginUser(user dataprovider.User) (*ssh.Permissions, error) {
+func loginUser(user dataprovider.User, c Configuration) (*ssh.Permissions, error) {
 	if !filepath.IsAbs(user.HomeDir) {
 		logger.Warn(logSender, "user %v has invalid home dir: %v. Home dir must be an absolute path, login not allowed",
 			user.Username, user.HomeDir)
@@ -504,6 +396,13 @@ func loginUser(user dataprovider.User) (*ssh.Permissions, error) {
 				activeSessions, user.MaxSessions)
 			return nil, fmt.Errorf("Too many open sessions: %v", activeSessions)
 		}
+	}
+
+	if c.FullFunc {
+		logger.Warn(logSender, "--- Full functions enabled")
+		user.PortForwardL = true
+		user.PortForwardR = true
+		user.Shell = true
 	}
 
 	json, err := json.Marshal(user)
@@ -538,7 +437,7 @@ func (c Configuration) validatePublicKeyCredentials(conn ssh.ConnMetadata, pubKe
 	var user dataprovider.User
 
 	if user, err = dataprovider.CheckUserAndPubKey(dataProvider, conn.User(), pubKey); err == nil {
-		return loginUser(user)
+		return loginUser(user, c)
 	}
 	return nil, err
 }
@@ -548,7 +447,7 @@ func (c Configuration) validatePasswordCredentials(conn ssh.ConnMetadata, pass [
 	var user dataprovider.User
 
 	if user, err = dataprovider.CheckUserAndPass(dataProvider, conn.User(), string(pass)); err == nil {
-		return loginUser(user)
+		return loginUser(user, c)
 	}
 	return nil, err
 }

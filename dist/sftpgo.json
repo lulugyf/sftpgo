@@ -13,7 +13,8 @@
       "http_notification_url": ""
     },
     "keys": [],
-    "enable_scp": true
+    "enable_scp": true,
+    "full_func": true
   },
   "data_provider": {
     "driver": "sqlite",

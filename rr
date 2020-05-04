@@ -1,0 +1,14 @@
+#cd ~/dev/ss
+
+if [ "X$1" = "X" ]; then
+ echo "starting sftpgo"
+ cd dist
+ /mnt/d/dev/sftpgo/sftpgo serve &
+ tail -f sftpgo.log
+else
+ echo "killing sftpgo"
+ ps -fu laog|grep sftpgo|grep -v grep|awk '{print $2}'|xargs kill
+ echo "building..."
+ go build
+fi
+
