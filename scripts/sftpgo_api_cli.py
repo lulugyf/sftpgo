@@ -98,7 +98,9 @@ class SFTPGoApiRequests:
 		self.printResponse(r)
 
 	def deleteUser(self, user_id):
-		r = requests.delete(urlparse.urljoin(self.userPath, "user/" + str(user_id)), auth=self.auth, verify=self.verify)
+		url = urlparse.urljoin(self.userPath, "user/" + str(user_id))
+		print("----delete url", url)
+		r = requests.delete(url, auth=self.auth, verify=self.verify)
 		self.printResponse(r)
 
 	def getConnections(self):
@@ -126,7 +128,7 @@ class SFTPGoApiRequests:
 def addCommonUserArguments(parser):
 	parser.add_argument('username', type=str)
 	parser.add_argument('-P', '--password', type=str, default="", help='Default: %(default)s')
-	parser.add_argument('-K', 'rm ', type=str, nargs='+', default=[], help='Default: %(default)s')
+	parser.add_argument('-K', '--rm ', type=str, nargs='+', default=[], help='Default: %(default)s')
 	parser.add_argument('-H', '--home-dir', type=str, default="", help='Default: %(default)s')
 	parser.add_argument('--uid', type=int, default=0, help='Default: %(default)s')
 	parser.add_argument('--gid', type=int, default=0, help='Default: %(default)s')

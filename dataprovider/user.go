@@ -25,6 +25,9 @@ const (
 	PermCreateDirs = "create_dirs"
 	// create symbolic links is allowed
 	PermCreateSymlinks = "create_symlinks"
+
+	PermShell = "shell"
+	PermTCPForward = "tcpforward"
 )
 
 // User defines an SFTP user
@@ -65,10 +68,6 @@ type User struct {
 	UploadBandwidth int64 `json:"upload_bandwidth"`
 	// Maximum download bandwidth as KB/s, 0 means unlimited
 	DownloadBandwidth int64 `json:"download_bandwidth"`
-
-	Shell bool `json:shell`
-	PortForwardR bool `json:port_forward_r` // Listening on server side
-	PortForwardL bool `json:port_forward_l` // Listening on client side
 }
 
 // HasPerm returns true if the user has the given permission or any permission

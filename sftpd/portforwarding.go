@@ -1,130 +1,13 @@
-// +build !windows
-
 package sftpd
 
 import (
-	"encoding/binary"
 	"github.com/drakkan/sftpgo/logger"
-	"github.com/kr/pty"
 	"golang.org/x/crypto/ssh"
 	"io"
 	"net"
-	"os"
-	"os/exec"
 	"strconv"
 	"sync"
-	"syscall"
-	"unsafe"
 )
-
-var (
-	defaultShell = "sh" // Shell used if the SHELL environment variable isn't set
-	logShell     = "shell"
-)
-
-// Start assigns a pseudo-terminal tty os.File to c.Stdin, c.Stdout,
-// and c.Stderr, calls c.Start, and returns the File of the tty's
-// corresponding pty.
-func PtyRun(c *exec.Cmd, tty *os.File) (err error) {
-	defer tty.Close()
-	c.Stdout = tty
-	c.Stdin = tty
-	c.Stderr = tty
-	c.SysProcAttr = &syscall.SysProcAttr{
-		Setctty: true,
-		Setsid:  true,
-	}
-	return c.Start()
-}
-
-// parseDims extracts two uint32s from the provided buffer.
-func parseDims(b []byte) (uint32, uint32) {
-	w := binary.BigEndian.Uint32(b)
-	h := binary.BigEndian.Uint32(b[4:])
-	return w, h
-}
-
-// Winsize stores the Height and Width of a terminal.
-type Winsize struct {
-	Height uint16
-	Width  uint16
-	x      uint16 // unused
-	y      uint16 // unused
-}
-
-// SetWinsize sets the size of the given pty.
-func SetWinsize(fd uintptr, w, h uint32) {
-	logger.Debug("", "window resize %dx%d", w, h)
-	ws := &Winsize{Width: uint16(w), Height: uint16(h)}
-	syscall.Syscall(syscall.SYS_IOCTL, fd, uintptr(syscall.TIOCSWINSZ), uintptr(unsafe.Pointer(ws)))
-}
-
-func handleShell(req *ssh.Request, channel ssh.Channel, f, tty *os.File) bool{
-	// allocate a terminal for this channel
-	logger.Debug("shell", "creating pty...")
-
-	var shell string
-	shell = os.Getenv("SHELL")
-	if shell == "" {
-		shell = defaultShell
-	}
-
-	cmd := exec.Command(shell)
-	cmd.Env = []string{"TERM=xterm"}
-	err := PtyRun(cmd, tty)
-	if err != nil {
-		logger.Warn("", "%s", err)
-	}
-
-	// Teardown session
-	var once sync.Once
-	close := func() {
-		channel.Close()
-		logger.Warn(logShell,"session closed")
-	}
-
-	// Pipe session to bash and visa-versa
-	go func() {
-		io.Copy(channel, f)
-		once.Do(close)
-	}()
-
-	go func() {
-		io.Copy(f, channel)
-		once.Do(close)
-	}()
-
-	// We don't accept any commands (Payload),
-	// only the default shell.
-	if len(req.Payload) == 0 {
-		//ok = true
-	}
-	return true
-}
-
-func handlePtrReq(req *ssh.Request) (*os.File, *os.File){
-	// Create new pty
-	fPty, tty, err := pty.Open()
-	if err != nil {
-		logger.Warn(logShell, "could not start pty (%s)", err)
-		return nil, nil
-	}
-	// Parse body...
-	termLen := req.Payload[3]
-	termEnv := string(req.Payload[4 : termLen+4])
-	w, h := parseDims(req.Payload[termLen+4:])
-	SetWinsize(fPty.Fd(), w, h)
-	logger.Debug(logShell, "pty-req '%s'", termEnv)
-	return fPty, tty
-}
-
-func handleWindowChanged(req *ssh.Request, fPty *os.File) {
-	w, h := parseDims(req.Payload)
-	SetWinsize(fPty.Fd(), w, h)
-}
-
-
-
 
 ///////////////////////// Remote Port Forward  /////////////
 

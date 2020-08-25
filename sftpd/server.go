@@ -209,7 +209,7 @@ func (c Configuration) AcceptInboundConnection(conn net.Conn, config *ssh.Server
 			case "tcpip-forward":
 				var payload []byte = nil
 				ok := false
-				if connection.User.PortForwardR {
+				if connection.User.HasPerm(dataprovider.PermTCPForward) {
 					if forwardHandler == nil {
 						forwardHandler = &ForwardedTCPHandler{forwards: make(map[string]net.Listener)}
 					}
@@ -245,7 +245,7 @@ func (c Configuration) iterChans(newChannel ssh.NewChannel, sconn *ssh.ServerCon
 	// know how to handle at this point.
 	logger.Debug(logSender,"  --- newChannel.ChannelType(): [%s] \n", newChannel.ChannelType())
 	if newChannel.ChannelType() == "direct-tcpip" {
-		if connection.User.PortForwardL {
+		if connection.User.HasPerm(dataprovider.PermTCPForward) {
 			go HandleDirectTCPIP(sconn, newChannel)
 			return true
 		}else{
@@ -268,79 +268,7 @@ func (c Configuration) iterChans(newChannel ssh.NewChannel, sconn *ssh.ServerCon
 
 	// Channels have a type that is dependent on the protocol. For SFTP this is "subsystem"
 	// with a payload that (should) be "sftp". Discard anything else we receive ("pty", "shell", etc)
-	go func(in <-chan *ssh.Request) {
-		var fPty *os.File = nil
-		var tty *os.File = nil
-		for req := range in {
-			ok := false
-			logger.Debug(logSender,"--- req.Type: [%s] payload [%s]\n", req.Type, string(req.Payload))
-
-			switch req.Type {
-			case "subsystem":
-				if string(req.Payload[4:]) == "sftp" {
-					ok = true
-					connection.protocol = protocolSFTP
-					go c.handleSftpConnection(channel, connection)
-				}
-			case "exec":
-				if c.IsSCPEnabled {
-					var msg execMsg
-					if err := ssh.Unmarshal(req.Payload, &msg); err == nil {
-						name, scpArgs, err := parseCommandPayload(msg.Command)
-						logger.Debug(logSender, "new exec command: %v args: %v user: %v, error: %v", name, scpArgs,
-							connection.User.Username, err)
-						if err == nil && name == "scp" && len(scpArgs) >= 2 {
-							ok = true
-							connection.protocol = protocolSCP
-							scpCommand := scpCommand{
-								connection: connection,
-								args:       scpArgs,
-								channel:    channel,
-							}
-							go scpCommand.handle()
-						}
-					}
-				}
-			case "shell":
-				if fPty == nil {
-					logger.Warn(logShell, "pty not open yet!")
-					ok = false
-				} else {
-					ok = handleShell(req, channel, fPty, tty)
-				}
-			case "pty-req":
-				if connection.User.Shell {
-					// Responding 'ok' here will let the client
-					// know we have a pty ready for input
-					ok = true
-					fPty, tty = handlePtrReq(req)
-					if fPty == nil {
-						ok = false
-					}
-				}else{
-					ok = false
-					logger.Warn(logShell, "Denied shell of user [%s]", connection.User.Username)
-				}
-			case "window-change":
-				if fPty == nil {
-					logger.Warn(logShell, "pty not open yet!")
-					ok = false
-				}else {
-					handleWindowChanged(req, fPty)
-				}
-				continue //no response
-			case "env":
-
-			}
-			req.Reply(ok, nil)
-		}
-		logger.Debug(logSender, " --request process exited...")
-		if fPty != nil {
-			fPty.Close()
-			tty.Close()
-			logger.Debug(logSender, " --pty closed")
-		}
-	}(requests)
+	go handleSSHRequest(requests, channel, connection, c)
 
 	return true
 }
@@ -396,13 +324,6 @@ func loginUser(user dataprovider.User, c Configuration) (*ssh.Permissions, error
 				activeSessions, user.MaxSessions)
 			return nil, fmt.Errorf("Too many open sessions: %v", activeSessions)
 		}
-	}
-
-	if c.FullFunc {
-		logger.Warn(logSender, "--- Full functions enabled")
-		user.PortForwardL = true
-		user.PortForwardR = true
-		user.Shell = true
 	}
 
 	json, err := json.Marshal(user)
