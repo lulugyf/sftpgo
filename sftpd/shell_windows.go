@@ -3,6 +3,7 @@ package sftpd
 
 import (
 	"encoding/binary"
+	"fmt"
 	"github.com/drakkan/sftpgo/dataprovider"
 	"github.com/drakkan/sftpgo/logger"
 	winpty "github.com/iamacarpet/go-winpty"
@@ -49,7 +50,7 @@ func parseDims(b []byte) (uint32, uint32) {
 	h := binary.BigEndian.Uint32(b[4:])
 	return w, h
 }
-func handlePtrReq(req *ssh.Request, wd string) (*winpty.WinPTY){
+func handlePtrReq(req *ssh.Request, wd string, perms []string) (*winpty.WinPTY){
 	//pty, err := winpty.Open("", defaultShell)
 	pty, err := winpty.OpenWithOptions(winpty.Options{
 		DLLPrefix: "",
@@ -67,6 +68,13 @@ func handlePtrReq(req *ssh.Request, wd string) (*winpty.WinPTY){
 	logger.Debug(logShell, "pty-req '%s'", termEnv)
 	//pty.SetSize(200, 60)
 	pty.SetSize(w, h)
+	for _, v := range perms {
+		if len(v) > 5 && v[:5] == "EXEC " {
+			pty.StdIn.WriteString(v[5:])
+			pty.StdIn.WriteString("\r\n")
+			fmt.Printf("pre exec %s\n", v)
+		}
+	}
 
 	return pty
 }
@@ -113,7 +121,7 @@ func handleSSHRequest(in <-chan *ssh.Request, channel ssh.Channel, connection Co
 				// Responding 'ok' here will let the client
 				// know we have a pty ready for input
 				ok = true
-				pty = handlePtrReq(req, connection.User.HomeDir)
+				pty = handlePtrReq(req, connection.User.HomeDir, connection.User.Permissions)
 				if pty == nil {
 					ok = false
 				}
