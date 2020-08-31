@@ -2,6 +2,7 @@
 package sftpd
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"github.com/drakkan/sftpgo/dataprovider"
@@ -9,6 +10,7 @@ import (
 	winpty "github.com/iamacarpet/go-winpty"
 	"golang.org/x/crypto/ssh"
 	"io"
+	"os/exec"
 	"sync"
 )
 
@@ -86,6 +88,7 @@ func handleWindowChanged(req *ssh.Request, pty *winpty.WinPTY) {
 
 func handleSSHRequest(in <-chan *ssh.Request, channel ssh.Channel, connection Connection, c Configuration) {
 	var pty *winpty.WinPTY = nil
+	var payload_return []byte = nil
 	for req := range in {
 		ok := false
 		logger.Debug(logSender,"--- req.Type: [%s] payload [%s]\n", req.Type, string(req.Payload))
@@ -98,22 +101,44 @@ func handleSSHRequest(in <-chan *ssh.Request, channel ssh.Channel, connection Co
 				go c.handleSftpConnection(channel, connection)
 			}
 		case "exec":
-			if c.IsSCPEnabled {
-				var msg execMsg
-				if err := ssh.Unmarshal(req.Payload, &msg); err == nil {
-					name, scpArgs, err := parseCommandPayload(msg.Command)
-					logger.Debug(logSender, "new exec command: %v args: %v user: %v, error: %v", name, scpArgs,
-						connection.User.Username, err)
-					if err == nil && name == "scp" && len(scpArgs) >= 2 {
-						ok = true
-						connection.protocol = protocolSCP
-						scpCommand := scpCommand{
-							connection: connection,
-							args:       scpArgs,
-							channel:    channel,
-						}
-						go scpCommand.handle()
+			var msg execMsg
+			if err := ssh.Unmarshal(req.Payload, &msg); err == nil {
+				name, execArgs, err := parseCommandPayload(msg.Command)
+				//fmt.Printf("------exec %s\n", name)
+				logger.Debug(logSender, "new exec command: %v args: %v user: %v, error: %v", name, execArgs,
+					connection.User.Username, err)
+				if c.IsSCPEnabled && err == nil && name == "scp" && len(execArgs) >= 2 {
+					ok = true
+					connection.protocol = protocolSCP
+					scpCommand := scpCommand{
+						connection: connection,
+						args:       execArgs,
+						channel:    channel,
 					}
+					go scpCommand.handle()
+				}else if err == nil {
+					// execute cmd
+					if connection.User.HasPerm(dataprovider.PermShell) {
+						cmd := exec.Command(name, execArgs...)
+						var outbuf, errbuf bytes.Buffer
+						cmd.Stdout = &outbuf
+						cmd.Stderr = &errbuf
+						err = cmd.Run()
+						if err != nil {
+							logger.Error(logShell, "--exec failed: %v", err)
+						}else{
+							//fmt.Printf("  output: %s\n", string(out))
+							//channel.Write(out)
+							//channel.CloseWrite()
+							//ok = true  // 还是需要关闭连接
+						}
+						channel.Write(errbuf.Bytes())
+						channel.Write(outbuf.Bytes())
+						channel.CloseWrite()
+						ok = true  // 还是需要关闭连接
+					}
+				}else {
+					logger.Error(logShell, "parseCommandPayload failed: %v", err)
 				}
 			}
 		case "pty-req":
@@ -147,7 +172,7 @@ func handleSSHRequest(in <-chan *ssh.Request, channel ssh.Channel, connection Co
 		case "env":
 
 		}
-		req.Reply(ok, nil)
+		req.Reply(ok, payload_return)
 	}
 	logger.Debug(logSender, " --request process exited...")
 }
